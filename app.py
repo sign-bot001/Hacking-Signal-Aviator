@@ -1,4 +1,4 @@
-# app.py — Signal Alert AVTR (table cliquable + fiche, 2 décimales)
+# app.py — Signal Alert AVTR (session_state + tableau cliquable + fiche)
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -23,18 +23,15 @@ body{background:#050608}
 .v{color:#e8ffe5; font-weight:700}
 .badge{display:inline-block; padding:4px 10px; border-radius:999px; font-weight:700;
   background:#0e2233; border:1px solid #274b63; color:#9fe3ff; margin-left:8px}
-.btn-primary button{background:#0e7bff;color:#fff;border-radius:10px;border:0}
 </style>
 """, unsafe_allow_html=True)
-
 st.markdown('<div class="title">⚡ Signal Alert AVTR — 60 prédictions (KST)</div>', unsafe_allow_html=True)
-st.caption("Clique sur « Charger et prédire » puis **coche une ligne** pour afficher la fiche détaillée. Cotes affichées avec **2 décimales**.")
+st.caption("Clique « Charger et prédire », puis coche une ligne pour afficher la fiche détaillée. (Heure HH:MM, cotes à 2 décimales)")
 
-# -------------------- HISTORIQUE SYNTHÉTIQUE (rapide) --------------------
+# -------------------- DATA SYNTHÉTIQUE --------------------
 @st.cache_data(show_spinner=False)
 def generate_history(n=3000, seed=42):
     rng = np.random.default_rng(seed)
-    # Régimes calmes/volatiles + queues lourdes ; aucune limite supérieure
     p_switch, state = 0.02, 0
     states=[]
     for _ in range(n):
@@ -57,7 +54,7 @@ def generate_history(n=3000, seed=42):
 
 BASE = generate_history()
 
-# -------------------- FEATURES (simples & rapides) --------------------
+# -------------------- FEATURES + MODEL --------------------
 def build_features(df, lags=30):
     df2 = df.copy()
     t = df2["timestamp"]
@@ -75,7 +72,6 @@ def build_features(df, lags=30):
     X = df2.drop(columns=["multiplier","timestamp"]).values
     return X, y, df2
 
-# -------------------- ENSEMBLE EXTRA-TREES (très rapide) --------------------
 def fit_fast_ensemble(X, y, n_trees=150, n_models=5):
     models=[]; seeds=[1,2,3,4,5][:n_models]
     for sd in seeds:
@@ -91,7 +87,6 @@ def conf_from_std(std_val, ref):
     rel = std_val / max(ref, 1.0)
     return float(np.clip(100*(1-rel), 0, 100))
 
-# -------------------- FORECAST 60 MIN --------------------
 def forecast_next_60(df, models, lags=30):
     work = df.copy()
     last_ts = work["timestamp"].iloc[-1]
@@ -108,59 +103,60 @@ def forecast_next_60(df, models, lags=30):
         last_ts = next_ts
 
     out = pd.DataFrame(rows, columns=["timestamp_kst","predicted_multiplier","confidence_0_100"])
-    # Affichage HH:MM uniquement
     out["time_kst"] = out["timestamp_kst"].dt.tz_convert(TZ).dt.strftime("%H:%M")
-    # Arrondi pour l’affichage à 2 décimales (on garde les valeurs brutes si besoin)
     out["predicted_multiplier"] = out["predicted_multiplier"].round(2)
     out["confidence_0_100"] = out["confidence_0_100"].round(1)
-    # colonne sélection
-    out.insert(0, "selected", False)
     return out
 
-# -------------------- BOUTON + TABLE CLIQUABLE --------------------
+# -------------------- BOUTON : CALCUL & STOCKAGE EN SESSION --------------------
 if st.button("🚀 Charger et prédire l’heure suivante (KST)", type="primary"):
     t0=time.time()
     df_train = BASE.iloc[-3000:].copy()
-    X, y, d = build_features(df_train, lags=30)
-    if len(X) < 100:
-        st.error("Initialisation des données impossible. Réessaie.")
-        st.stop()
-
+    X, y, _ = build_features(df_train, lags=30)
     models = fit_fast_ensemble(X, y, n_trees=150, n_models=5)
-    # métriques internes rapides (facultatif)
     y_hat, _ = predict_ensemble(models, X)
-    mae = mean_absolute_error(y, y_hat)
-    rmse = mean_squared_error(y, y_hat, squared=False)
+    st.session_state["metrics"] = {
+        "mae": float(mean_absolute_error(y, y_hat)),
+        "rmse": float(mean_squared_error(y, y_hat, squared=False)),
+        "elapsed": time.time()-t0
+    }
+    st.session_state["preds_df"] = forecast_next_60(df_train, models, lags=30)
 
-    out = forecast_next_60(df_train, models, lags=30)
+# -------------------- RENDU TABLE + FICHE (TOUJOURS EN DEHORS DU BOUTON) --------------------
+preds_df = st.session_state.get("preds_df", None)
 
-    # Tableau cliquable (une case à cocher par ligne)
-    st.markdown("### Prédictions (heure suivante, KST)")
+if preds_df is not None and isinstance(preds_df, pd.DataFrame) and len(preds_df) > 0:
+    # ajoute colonne de sélection si absente
+    if "selected" not in preds_df.columns:
+        preds_df = preds_df.copy()
+        preds_df.insert(0, "selected", False)
+        st.session_state["preds_df"] = preds_df  # sauvegarde
+
+    st.markdown("### Prédictions (prochaine heure, KST)")
     edited = st.data_editor(
-        out[["selected","time_kst","predicted_multiplier","confidence_0_100"]],
+        preds_df[["selected","time_kst","predicted_multiplier","confidence_0_100"]],
         use_container_width=True,
         hide_index=True,
         key="preds_table",
         column_config={
-            "selected": st.column_config.CheckboxColumn("Sélection", help="Coche une ligne pour afficher la fiche détaillée"),
+            "selected": st.column_config.CheckboxColumn("Sélection", help="Coche une ligne pour afficher la fiche"),
             "time_kst": "Heure (KST)",
             "predicted_multiplier": st.column_config.NumberColumn("Cote prédite (x)", format="%.2f"),
             "confidence_0_100": st.column_config.NumberColumn("Confiance (0–100)", format="%.1f"),
         },
-        disabled=["time_kst","predicted_multiplier","confidence_0_100"],  # on n'édite que la case
+        disabled=["time_kst","predicted_multiplier","confidence_0_100"],
     )
 
-    # Détection de la ligne cochée (si plusieurs -> première)
-    sel_rows = edited[edited["selected"]] if isinstance(edited, pd.DataFrame) else pd.DataFrame()
-    if sel_rows.shape[0] == 0:
-        st.info("Coche une ligne du tableau pour afficher la fiche détaillée.")
-    else:
-        idx = int(sel_rows.index[0])
-        row = out.iloc[idx]
-        hhmm = row["time_kst"]
-        pred = float(row["predicted_multiplier"])
-        conf = float(row["confidence_0_100"])
+    # met à jour la sélection en session
+    st.session_state["preds_df"]["selected"] = edited["selected"].values
 
+    # ligne cochée ?
+    sel_rows = st.session_state["preds_df"][st.session_state["preds_df"]["selected"]]
+    if sel_rows.shape[0] == 0:
+        st.info("Coche une ligne pour afficher la fiche détaillée.")
+    else:
+        i = int(sel_rows.index[0])
+        row = st.session_state["preds_df"].iloc[i]
         st.markdown(f"""
         <div class="card">
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
@@ -168,11 +164,17 @@ if st.button("🚀 Charger et prédire l’heure suivante (KST)", type="primary"
             <span class="badge">KST</span>
           </div>
           <div style="display:grid;grid-template-columns: 180px 1fr; row-gap:8px">
-            <div class="k">Heure :</div><div class="v">{hhmm}</div>
-            <div class="k">Cote prédite :</div><div class="v">{pred:.2f}×</div>
-            <div class="k">Confiance :</div><div class="v">{conf:.1f} / 100</div>
+            <div class="k">Heure :</div><div class="v">{row['time_kst']}</div>
+            <div class="k">Cote prédite :</div><div class="v">{row['predicted_multiplier']:.2f}×</div>
+            <div class="k">Confiance :</div><div class="v">{row['confidence_0_100']:.1f} / 100</div>
           </div>
         </div>
         """, unsafe_allow_html=True)
 
-    st.caption(f"Modèle: 5×ExtraTrees(150) • Entraînement sur 3000 points • MAE={mae:.3f} • RMSE={rmse:.3f} • Génération en {time.time()-t0:.1f}s")
+    # métriques
+    m = st.session_state.get("metrics", {})
+    if m:
+        st.caption(f"Modèle: 5×ExtraTrees(150) • Train=3000 pts • MAE={m['mae']:.3f} • RMSE={m['rmse']:.3f} • Génération {m['elapsed']:.1f}s")
+
+else:
+    st.info("Clique le bouton ci-dessus pour générer les 60 prédictions.")
