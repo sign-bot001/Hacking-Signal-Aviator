@@ -135,23 +135,50 @@ if st.button("🚀 Charger et prédire l’heure suivante (KST)", type="primary"
 
     out = forecast_next_60(df_train, models, lags=30)
 
-    # ------- TABLEAU CLIQUABLE (case à cocher) -------
-    out_show = out[["time_kst","predicted_multiplier","confidence_0_100"]].copy()
-    out_show.insert(0, "✔", False)   # colonne de sélection
-    st.markdown("### Prédictions par minute (KST)")
-    edited = st.data_editor(
-        out_show,
-        use_container_width=True,
-        hide_index=True,
-        key="preds_table",
-        column_config={
-            "✔": st.column_config.CheckboxColumn("Sélection", help="Coche une ligne pour voir la fiche détaillée"),
-            "time_kst": "Heure (KST)",
-            "predicted_multiplier": st.column_config.NumberColumn("Cote prédite (x)", format="%.4f"),
-            "confidence_0_100": st.column_config.NumberColumn("Confiance (0–100)", format="%.1f"),
-        },
-        disabled=["time_kst","predicted_multiplier","confidence_0_100"],  # on n'édite que la case
-    )
+   # ------- TABLEAU CLIQUABLE (case à cocher fiable) -------
+out_show = out[["time_kst","predicted_multiplier","confidence_0_100"]].copy()
+out_show.insert(0, "selected", False)   # colonne de sélection claire
+
+edited = st.data_editor(
+    out_show,
+    use_container_width=True,
+    hide_index=True,
+    key="preds_table",
+    column_config={
+        "selected": st.column_config.CheckboxColumn(
+            "Sélection", help="Coche une ligne pour voir la fiche détaillée"
+        ),
+        "time_kst": "Heure (KST)",
+        "predicted_multiplier": st.column_config.NumberColumn("Cote prédite (x)", format="%.6f"),
+        "confidence_0_100": st.column_config.NumberColumn("Confiance (0–100)", format="%.1f"),
+    },
+    disabled=["time_kst","predicted_multiplier","confidence_0_100"],  # on n'édite que la case
+)
+
+sel_rows = edited[edited["selected"]]
+if sel_rows.shape[0] == 0:
+    st.info("Coche une ligne dans le tableau pour afficher la fiche détaillée.")
+else:
+    # si plusieurs lignes cochées, on prend la première
+    i = int(sel_rows.index[0])
+    row = out.iloc[i]
+    hhmm = row["time_kst"]
+    pred = float(row["predicted_multiplier"])
+    conf = float(row["confidence_0_100"])
+
+    st.markdown(f"""
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+        <div class="k">Signal Alert AVTR</div>
+        <span class="badge">KST</span>
+      </div>
+      <div style="display:grid;grid-template-columns: 160px 1fr; row-gap:8px">
+        <div class="k">Heure :</div><div class="v">{hhmm}</div>
+        <div class="k">Cote prédite :</div><div class="v">{pred:.6f}×</div>
+        <div class="k">Confiance :</div><div class="v">{conf:.1f} / 100</div>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
 
     # détecte la ligne cochée
     sel_idx = edited.index[edited["✔"]].tolist()
